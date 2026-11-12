@@ -2009,16 +2009,22 @@ async def cmd_habits(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("\n<i>发送 <code>打卡</code> 或 <code>/checkin</code> 即可调出打卡面板。</i>")
     await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
-async def cmd_heatmap(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await auth_check(update): return
+def generate_habit_heatmap_file(save_path: str = None) -> tuple[str, str]:
+    if not save_path:
+        save_path = os.path.join(BASE_DIR, "habit_heatmap.png")
     with get_db() as conn:
         rows = conn.execute("SELECT check_date, ratio FROM daily_habit_snapshots").fetchall()
         history_data = {r["check_date"]: r["ratio"] for r in rows}
         streak = calculate_habit_streak(conn)
         
     theme_name = random.choice(list(PALETTES.keys()))
-    img_path = os.path.join(BASE_DIR, "habit_heatmap.png")
-    render_heatmap_image(history_data, streak_days=streak, palette_name=theme_name, save_path=img_path)
+    render_heatmap_image(history_data, streak_days=streak, palette_name=theme_name, save_path=save_path)
+    return save_path, theme_name
+
+async def cmd_heatmap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await auth_check(update): return
+    img_path, theme_name = generate_habit_heatmap_file()
+    streak = calculate_habit_streak()
     
     caption = (
         f"<b>习惯追踪热力图</b>\n"
