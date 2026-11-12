@@ -1525,16 +1525,18 @@ async def publish_telegraph_page(title: str, content_nodes: list[dict]) -> str |
             return None
             
         try:
+            # 严格去除 author_name 和 author_url，杜绝低信息量署名栏
+            payload = {
+                "access_token": token,
+                "title": title,
+                "content": content_nodes,
+                "return_content": False
+            }
+            body_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             page_resp = await client.post(
                 "https://api.telegra.ph/createPage",
-                json={
-                    "access_token": token,
-                    "title": title,
-                    "author_name": "NewsFlash",
-                    "author_url": MASTER_BLOG_URL,
-                    "content": content_nodes,
-                    "return_content": False
-                }
+                content=body_bytes,
+                headers={"Content-Type": "application/json"}
             )
             if page_resp.status_code == 200:
                 page_data = page_resp.json()
@@ -1767,25 +1769,13 @@ async def send_digest_dispatch(context: ContextTypes.DEFAULT_TYPE, report_type: 
             conn.execute(f"UPDATE articles SET is_in_digest = 1 WHERE id IN ({','.join(art_ids)})")
             conn.commit()
 
-    # 6. 生成随机配色与 GitHub 极客热力图封面
-    theme_name = random.choice(list(PALETTES.keys()))
-    hex_color = PALETTES[theme_name]["hex"]
-    gh_url = f"https://ghchart.rshah.org/{hex_color}/F10w-0x00"
+    # 6. 生成 Telegra.ph 原生排版特刊（纯粹资讯，全量完整展现，杜绝精选，零低信息量套话）
     page_title = f"NewsFlash {period_name} · {title_date}"
 
-    # 无文章时的空报卡片（依然生成精美静默沉淀特刊，确保 Telegraph 预览正常弹出）
+    # 无文章时的空报卡片
     if not valid_articles:
         empty_nodes = [
-            {"tag": "figure", "children": [
-                {"tag": "img", "attrs": {"src": gh_url}},
-                {"tag": "figcaption", "children": [f"GitHub Activity Matrix · 主题配色：{theme_name} (#{hex_color})"]}
-            ]},
-            {"tag": "h4", "children": [f"NewsFlash {period_name} · 今日静默沉淀 ({title_date})"]},
-            {"tag": "p", "children": ["全网聚合 · 纯粹阅读 · 静默陪伴"]},
-            {"tag": "hr"},
-            {"tag": "p", "children": ["今天关注的各博客源均很安静，没有新的公开动态。难得清闲一晚，请主人安心歇息。"]},
-            {"tag": "hr"},
-            {"tag": "p", "children": ["NewsFlash · 专属主人的高质感资讯特刊"]}
+            {"tag": "p", "children": ["今天关注的各博客源均很安静，没有新的公开动态。难得清闲一晚，请主人安心歇息。"]}
         ]
         telegraph_url = await publish_telegraph_page(page_title, empty_nodes)
         
@@ -1804,10 +1794,11 @@ async def send_digest_dispatch(context: ContextTypes.DEFAULT_TYPE, report_type: 
             night_empty_msg = f"<i>[{rt.upper()} 预览]</i>\n\n" + night_empty_msg
             
         if telegraph_url:
+            night_empty_msg += f"<a href=\"{telegraph_url}\">&#x200b;</a>"
             preview_opts = LinkPreviewOptions(
                 url=telegraph_url,
                 is_disabled=False,
-                prefer_large_media=True,
+                prefer_large_media=False,
                 show_above_text=False
             )
             await context.bot.send_message(
@@ -1844,69 +1835,32 @@ async def send_digest_dispatch(context: ContextTypes.DEFAULT_TYPE, report_type: 
 
     sorted_feed_items = sorted(grouped.items(), key=lambda item: item[0])
 
-    # 组装 Telegra.ph 原生排版节点（含 GitHub 热力图封面，单源上限 6 篇防止超大包 CONTENT_TOO_BIG）
-    def build_telegraph_nodes(max_items_per_feed: int = 6) -> list[dict]:
-        nodes = [
-            {"tag": "figure", "children": [
-                {"tag": "img", "attrs": {"src": gh_url}},
-                {"tag": "figcaption", "children": [f"GitHub Activity Matrix · 主题配色：{theme_name} (#{hex_color})"]}
-            ]},
-            {"tag": "h4", "children": [f"NewsFlash {period_name} · 资讯精编 ({title_date})"]},
-            {"tag": "p", "children": ["全网聚合 · 纯粹阅读 · 静默陪伴"]},
-            {"tag": "hr"}
-        ]
-        
-        if master_articles:
-            nodes.append({"tag": "h3", "children": ["▍ 主人专栏 · 今日动态"]})
-            m_list = []
-            for it in master_articles:
-                try:
-                    pub_dt = datetime.strptime(it["published_at"], "%Y-%m-%d %H:%M:%S")
-                    time_str = pub_dt.strftime("%H:%M")
-                except Exception:
-                    time_str = "--:--"
-                m_list.append({"tag": "li", "children": [
-                    {"tag": "a", "attrs": {"href": it["link"]}, "children": [it["art_title"]]},
-                    f" ({time_str})"
-                ]})
-            nodes.append({"tag": "ul", "children": m_list})
-            nodes.append({"tag": "hr"})
+    # 组装 Telegra.ph 原生排版节点（纯粹资讯，全量完整展现，杜绝精选，零低信息量套话）
+    telegraph_nodes = []
+    if master_articles:
+        telegraph_nodes.append({"tag": "h3", "children": ["▍ 主人专栏 · 今日动态"]})
+        m_children = []
+        for it in master_articles:
+            m_children.append({"tag": "a", "attrs": {"href": it["link"]}, "children": [it["art_title"]]})
+            m_children.append({"tag": "br"})
+        telegraph_nodes.append({"tag": "p", "children": m_children})
+        telegraph_nodes.append({"tag": "hr"})
 
-        for f_id, data in sorted_feed_items:
-            feed_title_escaped = data["title"]
-            items = data["items"]
-            displayed_items = items[:max_items_per_feed]
-            sec_title = f"▍ [{f_id}] {feed_title_escaped} (共 {len(items)} 篇{f'，精选 {len(displayed_items)} 篇' if len(items) > max_items_per_feed else ''})"
-            nodes.append({"tag": "h3", "children": [sec_title]})
-            items_nodes = []
-            for it in displayed_items:
-                try:
-                    pub_dt = datetime.strptime(it["published_at"], "%Y-%m-%d %H:%M:%S")
-                    time_str = pub_dt.strftime("%H:%M")
-                except Exception:
-                    time_str = "--:--"
-                items_nodes.append({
-                    "tag": "li",
-                    "children": [
-                        {"tag": "a", "attrs": {"href": it["link"]}, "children": [it["art_title"]]},
-                        f" ({time_str})"
-                    ]
-                })
-            nodes.append({"tag": "ul", "children": items_nodes})
-            nodes.append({"tag": "hr"})
+    for f_id, data in sorted_feed_items:
+        feed_title_escaped = data["title"]
+        items = data["items"]
+        telegraph_nodes.append({"tag": "h3", "children": [f"▍ [{f_id}] {feed_title_escaped} (共 {len(items)} 篇)"]})
+        p_children = []
+        for it in items:
+            p_children.append({"tag": "a", "attrs": {"href": it["link"]}, "children": [it["art_title"]]})
+            p_children.append({"tag": "br"})
+        telegraph_nodes.append({"tag": "p", "children": p_children})
+        telegraph_nodes.append({"tag": "hr"})
 
-        nodes.append({"tag": "p", "children": ["NewsFlash · 专属主人的高质感资讯特刊"]})
-        return nodes
-
-    # 发布到 Telegra.ph（具备自动降级重试机制）
-    telegraph_nodes = build_telegraph_nodes(max_items_per_feed=6)
+    # 发布到 Telegra.ph（全量完整展现）
     telegraph_url = await publish_telegraph_page(page_title, telegraph_nodes)
-    if not telegraph_url:
-        print("[Telegraph] 首发失败，降级压缩重试...")
-        telegraph_nodes = build_telegraph_nodes(max_items_per_feed=2)
-        telegraph_url = await publish_telegraph_page(page_title, telegraph_nodes)
 
-    # 7. 组装极致纯净的 Telegram 极简卡片 (C1 + 移除正文 URL)
+    # 7. 组装极致纯净的 Telegram 极简卡片 (C1 + 即时预览大卡片触发)
     card_lines = [
         header_title,
         "",
@@ -1923,10 +1877,11 @@ async def send_digest_dispatch(context: ContextTypes.DEFAULT_TYPE, report_type: 
         final_card = f"<i>[{rt.upper()} 预览]</i>\n\n" + final_card
 
     if telegraph_url:
+        final_card += f"<a href=\"{telegraph_url}\">&#x200b;</a>"
         preview_opts = LinkPreviewOptions(
             url=telegraph_url,
             is_disabled=False,
-            prefer_large_media=True,
+            prefer_large_media=False,
             show_above_text=False
         )
 
