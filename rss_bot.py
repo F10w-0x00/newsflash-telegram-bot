@@ -140,17 +140,19 @@ def get_db():
 PALETTES = {
     "万圣南瓜紫": {
         "bg": (27, 21, 35),
+        "en_name": "HALLOWEEN PUMPKIN",
         "levels": [
-            (43, 33, 58),     # Level 0 (0% 未完成)
-            (99, 28, 3),      # Level 1 (1%-25%)
-            (189, 86, 29),    # Level 2 (26%-50%)
-            (250, 122, 24),   # Level 3 (51%-99%)
-            (253, 223, 104)   # Level 4 (100% 大满贯)
+            (43, 33, 58),
+            (99, 28, 3),
+            (189, 86, 29),
+            (250, 122, 24),
+            (253, 223, 104)
         ],
         "hex": "fa7a18"
     },
     "GitHub经典绿": {
         "bg": (22, 27, 34),
+        "en_name": "GITHUB GREEN",
         "levels": [
             (33, 38, 45),
             (14, 68, 41),
@@ -162,6 +164,7 @@ PALETTES = {
     },
     "赛博霓虹": {
         "bg": (13, 2, 33),
+        "en_name": "CYBERPUNK NEON",
         "levels": [
             (31, 16, 53),
             (79, 18, 113),
@@ -173,6 +176,7 @@ PALETTES = {
     },
     "冬夜幽蓝": {
         "bg": (11, 25, 44),
+        "en_name": "WINTER ICE BLUE",
         "levels": [
             (30, 62, 98),
             (0, 80, 130),
@@ -184,6 +188,7 @@ PALETTES = {
     },
     "落樱暗绯": {
         "bg": (31, 20, 24),
+        "en_name": "SAKURA BLOSSOM",
         "levels": [
             (53, 32, 40),
             (110, 33, 66),
@@ -195,6 +200,7 @@ PALETTES = {
     },
     "落日琥珀": {
         "bg": (28, 25, 23),
+        "en_name": "SOLARIZED AMBER",
         "levels": [
             (41, 37, 36),
             (120, 53, 15),
@@ -206,6 +212,7 @@ PALETTES = {
     },
     "极简墨银": {
         "bg": (18, 18, 18),
+        "en_name": "MONOCHROME SLATE",
         "levels": [
             (36, 36, 36),
             (72, 72, 72),
@@ -217,6 +224,7 @@ PALETTES = {
     },
     "幽谷竹青": {
         "bg": (15, 29, 25),
+        "en_name": "DEEP BAMBOO FOREST",
         "levels": [
             (29, 51, 45),
             (27, 67, 50),
@@ -269,7 +277,7 @@ def render_heatmap_image(history_data: dict[str, float], streak_days: int = 0, p
     draw = ImageDraw.Draw(img)
     
     header_title = "HABIT TRACKER"
-    sub_title = f"THEME: {palette_name.upper()} | STREAK: {streak_days} DAYS"
+    sub_title = f"THEME: {palette.get('en_name', palette_name).upper()} | STREAK: {streak_days} DAYS"
     draw.text((left_padding, 18), header_title, fill=(240, 240, 240))
     draw.text((left_padding, 36), sub_title, fill=(160, 160, 160))
     
@@ -778,15 +786,26 @@ def build_menu_keyboard():
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await auth_check(update): return
+    # 激活底部常驻打卡按键
+    main_kb = ReplyKeyboardMarkup([[KeyboardButton("打卡")]], resize_keyboard=True, is_persistent=True)
+    await update.effective_message.reply_text(
+        "NewsFlash 系统已就绪，已为主人常驻底部「打卡」快捷键。",
+        reply_markup=main_kb
+    )
     welcome = (
         "<b>NewsFlash 控制中心</b>\n\n"
-        "主人晚上好！系统已就绪，正在全天静默采集中，每晚 22:00 会准时为主人送达精编晚报喵~\n\n"
+        "主人晚上好！系统正在全天静默采集中，每晚 22:00 会准时为主人送达精编晚报。\n\n"
         "点击下方按钮进行快捷操作，或点击左下角 <code>Menu</code> 查看指令列表："
     )
     await update.effective_message.reply_text(welcome, parse_mode=ParseMode.HTML, reply_markup=build_menu_keyboard())
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await auth_check(update): return
+    main_kb = ReplyKeyboardMarkup([[KeyboardButton("打卡")]], resize_keyboard=True, is_persistent=True)
+    await update.effective_message.reply_text(
+        "控制中心就绪，底部已常驻「打卡」按键。",
+        reply_markup=main_kb
+    )
     await update.effective_message.reply_text("<b>NewsFlash 控制中心</b>", parse_mode=ParseMode.HTML, reply_markup=build_menu_keyboard())
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
