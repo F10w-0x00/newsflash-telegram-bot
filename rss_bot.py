@@ -170,9 +170,14 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
                 target_date TEXT NOT NULL,
+                remark TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
+        cursor = conn.execute("PRAGMA table_info(countdown_targets)")
+        existing_cols = [row[1] for row in cursor.fetchall()]
+        if "remark" not in existing_cols:
+            conn.execute("ALTER TABLE countdown_targets ADD COLUMN remark TEXT DEFAULT ''")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -319,7 +324,7 @@ def get_all_targets() -> tuple[list[dict], list[dict]]:
     """获取所有倒数与历程：返回 (upcoming, passed)"""
     now = datetime.now(TIMEZONE).date()
     with get_db() as conn:
-        rows = conn.execute("SELECT id, title, target_date FROM countdown_targets ORDER BY target_date ASC").fetchall()
+        rows = conn.execute("SELECT id, title, target_date, COALESCE(remark, '') AS remark FROM countdown_targets ORDER BY target_date ASC").fetchall()
     
     upcoming = []
     passed = []
@@ -331,6 +336,7 @@ def get_all_targets() -> tuple[list[dict], list[dict]]:
                 "id": r["id"],
                 "title": r["title"],
                 "target_date": r["target_date"],
+                "remark": r["remark"],
                 "days": diff
             }
             if diff >= 0:
@@ -582,14 +588,37 @@ async def cmd_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await auth_check(update): return
     if not context.args or len(context.args) < 2:
         await update.effective_message.reply_text(
-            "格式错误，请使用：<code>/target &lt;日期&gt; &lt;事项名称&gt;</code>\n"
-            "<i>示例：<code>/target 2026-11-14 计算机考试</code> 或 <code>/target 12-12 英语四级</code></i>",
+            "格式错误，请使用：<code>/target &lt;日期&gt; &lt;事项名称&gt; [| 备注内容]</code>\n"
+            "<i>示例：<code>/target 2026-11-14 计算机考试 | 提前打印准考证</code></i>\n"
+            "<i>或者：<code>/target 12-12 英语四级 备注: 带听力耳机</code></i>",
             parse_mode=ParseMode.HTML
         )
         return
+        
     date_str = context.args[0].strip()
-    title = " ".join(context.args[1:]).strip()
+    raw_rest = " ".join(context.args[1:]).strip()
     
+    remark = ""
+    if "|" in raw_rest:
+        parts = raw_rest.split("|", 1)
+        title = parts[0].strip()
+        remark = parts[1].strip()
+    elif "备注:" in raw_rest:
+        parts = raw_rest.split("备注:", 1)
+        title = parts[0].strip()
+        remark = parts[1].strip()
+    elif "备注：" in raw_rest:
+        parts = raw_rest.split("备注：", 1)
+        title = parts[0].strip()
+        remark = parts[1].strip()
+    elif "附:" in raw_rest or "附：" in raw_rest:
+        sep = "附:" if "附:" in raw_rest else "附："
+        parts = raw_rest.split(sep, 1)
+        title = parts[0].strip()
+        remark = parts[1].strip()
+    else:
+        title = raw_rest
+        
     target_date, err = parse_target_date(date_str)
     if err:
         await update.effective_message.reply_text(err, parse_mode=ParseMode.HTML)
@@ -601,20 +630,70 @@ async def cmd_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute("INSERT INTO countdown_targets (title, target_date) VALUES (?, ?)", (title, target_date))
+        cur.execute("INSERT INTO countdown_targets (title, target_date, remark) VALUES (?, ?, ?)", (title, target_date, remark))
         conn.commit()
         new_id = cur.lastrowid
         
     if diff_days >= 0:
         desc = f"倒计时 <b>{diff_days}</b> 天"
     else:
-        desc = f"历程记事 · 距今已过 <b>{abs(diff_days)}</b> 天"
+        desc = f"历程记事 · 距今已过 <b>{abs_val}</b> 天".replace("abs_val", str(abs(diff_days)))
         
-    await update.effective_message.reply_text(
-        f"已成功为主人记入日程看板：\n"
-        f"<b>[{new_id}] {html.escape(title)}</b> · <code>{target_date}</code>（{desc}）喵~",
-        parse_mode=ParseMode.HTML
-    )
+    msg_lines = [
+        f"已成功为主人记入日程看板：",
+        f"<b>[{new_id}] {html.escape(title)}</b> · <code>{target_date}</code>（{desc}）"
+    ]
+    if remark:
+        msg_lines.append(f"<b>备注：</b>{html.escape(remark)}")
+    msg_lines.append("喵~")
+    
+    await update.effective_message.reply_text("\n".join(msg_lines), parse_mode=ParseMode.HTML)
+
+async def cmd_memo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """直接发送信息替换或清空指定目标的备注"""
+    if not await auth_check(update): return
+    if not context.args:
+        await update.effective_message.reply_text(
+            "<b>目标备注管理</b>\n\n"
+            "• 设置/直接替换备注：\n"
+            "  <code>/memo &lt;编号&gt; &lt;新备注内容&gt;</code>\n"
+            "  <i>例：<code>/memo 1 考点在东校区302教室</code></i>\n\n"
+            "• 清空某项备注：\n"
+            "  <code>/memo &lt;编号&gt;</code>\n\n"
+            "<i>提示：目标编号可通过 <code>/targets</code> 指令查阅。</i>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+        
+    t_id_str = context.args[0].strip()
+    try:
+        t_id = int(t_id_str)
+    except ValueError:
+        await update.effective_message.reply_text("目标编号必须为纯数字，请核对后重试喵。", parse_mode=ParseMode.HTML)
+        return
+        
+    new_remark = " ".join(context.args[1:]).strip() if len(context.args) > 1 else ""
+    
+    with get_db() as conn:
+        row = conn.execute("SELECT id, title, target_date FROM countdown_targets WHERE id = ?", (t_id,)).fetchone()
+        if not row:
+            await update.effective_message.reply_text(f"未找到编号为 <code>{t_id}</code> 的目标，请发送 <code>/targets</code> 核对编号喵。", parse_mode=ParseMode.HTML)
+            return
+            
+        conn.execute("UPDATE countdown_targets SET remark = ? WHERE id = ?", (new_remark, t_id))
+        conn.commit()
+        
+    if new_remark:
+        await update.effective_message.reply_text(
+            f"已成功为事项 <b>[{t_id}] {html.escape(row['title'])}</b> 替换更新备注：\n"
+            f"<code>{html.escape(new_remark)}</code>喵~",
+            parse_mode=ParseMode.HTML
+        )
+    else:
+        await update.effective_message.reply_text(
+            f"已成功清空事项 <b>[{t_id}] {html.escape(row['title'])}</b> 的备注喵。",
+            parse_mode=ParseMode.HTML
+        )
 
 async def cmd_targets(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await auth_check(update): return
@@ -631,14 +710,20 @@ async def cmd_targets(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if upcoming:
         lines.append("<b>未来征途：</b>")
         for t in upcoming:
-            lines.append(f"• <b>[{t['id']}]</b> {html.escape(t['title'])} · <code>{t['target_date']}</code>（倒计时 <b>{t['days']}</b> 天）")
+            t_line = f"• <b>[{t['id']}]</b> {html.escape(t['title'])} · <code>{t['target_date']}</code>（倒计时 <b>{t['days']}</b> 天）"
+            if t.get("remark") and t["remark"].strip():
+                t_line += f"\n  <i>备注: {html.escape(t['remark'].strip())}</i>"
+            lines.append(t_line)
             
     if passed:
         if upcoming:
             lines.append("")
         lines.append("<b>历程记事：</b>")
         for t in passed:
-            lines.append(f"• <b>[{t['id']}]</b> {html.escape(t['title'])} · <code>{t['target_date']}</code>（距今已过 <b>{t['passed_days']}</b> 天）")
+            t_line = f"• <b>[{t['id']}]</b> {html.escape(t['title'])} · <code>{t['target_date']}</code>（距今已过 <b>{t['passed_days']}</b> 天）"
+            if t.get("remark") and t["remark"].strip():
+                t_line += f"\n  <i>备注: {html.escape(t['remark'].strip())}</i>"
+            lines.append(t_line)
         
     lines.append("\n<i>彻底移除指令：<code>/deltarget &lt;编号&gt;</code></i>")
     await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
@@ -1216,7 +1301,7 @@ def format_persona_countdown_a1(persona: dict, holiday_name: str, holiday_days: 
         transition_text = persona.get(f"{rt}_transition", persona.get("transition_intro", "翻开手边的随身备忘，我替主人把近期的重要事项理一理："))
         lines.append(transition_text)
         
-        # 方向 B：单行点缀紧凑流
+        # 晚报看板完整展示备注（支持同日多任务紧凑与每项备注完整展开）
         if upcoming:
             lines.append("未来征途：")
             grouped_upcoming = {}
@@ -1224,10 +1309,20 @@ def format_persona_countdown_a1(persona: dict, holiday_name: str, holiday_days: 
                 d_key = (t["target_date"], t["days"])
                 if d_key not in grouped_upcoming:
                     grouped_upcoming[d_key] = []
-                grouped_upcoming[d_key].append(html.escape(t["title"]))
-            for (t_date, days), titles in grouped_upcoming.items():
-                titles_str = " · ".join(titles)
-                lines.append(f"• {t_date} (倒计时 {days} 天): {titles_str}")
+                grouped_upcoming[d_key].append(t)
+                
+            for (t_date, days), items in grouped_upcoming.items():
+                if len(items) == 1:
+                    it = items[0]
+                    lines.append(f"• {t_date} (倒计时 {days} 天): {html.escape(it['title'])}")
+                    if it.get("remark") and it["remark"].strip():
+                        lines.append(f"  备注: {html.escape(it['remark'].strip())}")
+                else:
+                    titles_str = " · ".join(html.escape(it["title"]) for it in items)
+                    lines.append(f"• {t_date} (倒计时 {days} 天): {titles_str}")
+                    for it in items:
+                        if it.get("remark") and it["remark"].strip():
+                            lines.append(f"  - {html.escape(it['title'])} 备注: {html.escape(it['remark'].strip())}")
                 
         if passed:
             if upcoming:
@@ -1238,10 +1333,20 @@ def format_persona_countdown_a1(persona: dict, holiday_name: str, holiday_days: 
                 d_key = (t["target_date"], t["passed_days"])
                 if d_key not in grouped_passed:
                     grouped_passed[d_key] = []
-                grouped_passed[d_key].append(html.escape(t["title"]))
-            for (t_date, p_days), titles in grouped_passed.items():
-                titles_str = " · ".join(titles)
-                lines.append(f"• {t_date} (距今已过 {p_days} 天): {titles_str}")
+                grouped_passed[d_key].append(t)
+                
+            for (t_date, p_days), items in grouped_passed.items():
+                if len(items) == 1:
+                    it = items[0]
+                    lines.append(f"• {t_date} (距今已过 {p_days} 天): {html.escape(it['title'])}")
+                    if it.get("remark") and it["remark"].strip():
+                        lines.append(f"  备注: {html.escape(it['remark'].strip())}")
+                else:
+                    titles_str = " · ".join(html.escape(it["title"]) for it in items)
+                    lines.append(f"• {t_date} (距今已过 {p_days} 天): {titles_str}")
+                    for it in items:
+                        if it.get("remark") and it["remark"].strip():
+                            lines.append(f"  - {html.escape(it['title'])} 备注: {html.escape(it['remark'].strip())}")
                 
     return "\n".join(lines)
 
@@ -1501,7 +1606,8 @@ async def post_init(application: Application):
         BotCommand("monthly", "月度特刊预览"),
         BotCommand("annual", "年度史册特刊预览"),
         BotCommand("targets", "日程与历程双分区看板"),
-        BotCommand("target", "添加目标: /target 日期 事项"),
+        BotCommand("target", "添加目标: /target 日期 事项 | 备注"),
+        BotCommand("memo", "替换目标备注: /memo 编号 备注内容"),
         BotCommand("list", "已订阅博客列表"),
         BotCommand("blocklist", "关键词屏蔽列表"),
         BotCommand("export", "导出 OPML 订阅文件"),
@@ -1539,6 +1645,8 @@ def main():
     
     # 倒数日与历程指令
     app.add_handler(CommandHandler("target", cmd_target))
+    app.add_handler(CommandHandler("memo", cmd_memo))
+    app.add_handler(CommandHandler("remark", cmd_memo))
     app.add_handler(CommandHandler("targets", cmd_targets))
     app.add_handler(CommandHandler("deltarget", cmd_deltarget))
     
