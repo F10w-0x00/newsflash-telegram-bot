@@ -135,6 +135,12 @@ def get_db():
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
 
+# 底部常驻单键打卡键盘（永久挂载，轻量自适应）
+MAIN_REPLY_KEYBOARD = ReplyKeyboardMarkup(
+    [[KeyboardButton("打卡")]],
+    resize_keyboard=True,
+    is_persistent=True
+)
 
 # ==================== 8套高质感随机热力图主题色盘 ====================
 PALETTES = {
@@ -786,11 +792,9 @@ def build_menu_keyboard():
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await auth_check(update): return
-    # 激活底部常驻打卡按键
-    main_kb = ReplyKeyboardMarkup([[KeyboardButton("打卡")]], resize_keyboard=True, is_persistent=True)
     await update.effective_message.reply_text(
         "NewsFlash 系统已就绪，已为主人常驻底部「打卡」快捷键。",
-        reply_markup=main_kb
+        reply_markup=MAIN_REPLY_KEYBOARD
     )
     welcome = (
         "<b>NewsFlash 控制中心</b>\n\n"
@@ -801,10 +805,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await auth_check(update): return
-    main_kb = ReplyKeyboardMarkup([[KeyboardButton("打卡")]], resize_keyboard=True, is_persistent=True)
     await update.effective_message.reply_text(
         "控制中心就绪，底部已常驻「打卡」按键。",
-        reply_markup=main_kb
+        reply_markup=MAIN_REPLY_KEYBOARD
     )
     await update.effective_message.reply_text("<b>NewsFlash 控制中心</b>", parse_mode=ParseMode.HTML, reply_markup=build_menu_keyboard())
 
@@ -1423,7 +1426,11 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     
     data = query.data
-    if data == "menu_list":
+    if data == "menu_checkin":
+        await cmd_checkin(update, context)
+    elif data == "menu_heatmap":
+        await cmd_heatmap(update, context)
+    elif data == "menu_list":
         await cmd_list(update, context)
     elif data == "menu_digest":
         await cmd_digest(update, context)
@@ -1533,8 +1540,12 @@ async def publish_telegraph_page(title: str, content_nodes: list[dict]) -> str |
                 page_data = page_resp.json()
                 if page_data.get("ok"):
                     return page_data["result"]["url"]
+                else:
+                    print(f"[Telegraph CreatePage Error] {page_data.get('error')}")
+            else:
+                print(f"[Telegraph CreatePage HTTP {page_resp.status_code}] {page_resp.text}")
         except Exception as e:
-            print(f"[Telegraph CreatePage Error] {e}")
+            print(f"[Telegraph CreatePage Exception] {e}")
             return None
     return None
 
@@ -1756,8 +1767,28 @@ async def send_digest_dispatch(context: ContextTypes.DEFAULT_TYPE, report_type: 
             conn.execute(f"UPDATE articles SET is_in_digest = 1 WHERE id IN ({','.join(art_ids)})")
             conn.commit()
 
-    # 无文章时的空报卡片
+    # 6. 生成随机配色与 GitHub 极客热力图封面
+    theme_name = random.choice(list(PALETTES.keys()))
+    hex_color = PALETTES[theme_name]["hex"]
+    gh_url = f"https://ghchart.rshah.org/{hex_color}/F10w-0x00"
+    page_title = f"NewsFlash {period_name} · {title_date}"
+
+    # 无文章时的空报卡片（依然生成精美静默沉淀特刊，确保 Telegraph 预览正常弹出）
     if not valid_articles:
+        empty_nodes = [
+            {"tag": "figure", "children": [
+                {"tag": "img", "attrs": {"src": gh_url}},
+                {"tag": "figcaption", "children": [f"GitHub Activity Matrix · 主题配色：{theme_name} (#{hex_color})"]}
+            ]},
+            {"tag": "h4", "children": [f"NewsFlash {period_name} · 今日静默沉淀 ({title_date})"]},
+            {"tag": "p", "children": ["全网聚合 · 纯粹阅读 · 静默陪伴"]},
+            {"tag": "hr"},
+            {"tag": "p", "children": ["今天关注的各博客源均很安静，没有新的公开动态。难得清闲一晚，请主人安心歇息。"]},
+            {"tag": "hr"},
+            {"tag": "p", "children": ["NewsFlash · 专属主人的高质感资讯特刊"]}
+        ]
+        telegraph_url = await publish_telegraph_page(page_title, empty_nodes)
+        
         card_parts = [
             header_title,
             "",
@@ -1766,20 +1797,34 @@ async def send_digest_dispatch(context: ContextTypes.DEFAULT_TYPE, report_type: 
             "<b>倒数备忘：</b>",
             countdown_text,
             "",
-            "今天关注的各博客都很安静，没有新的动态更新（或者都被主人的屏蔽词过滤掉啦）喵。",
-            "",
             goodnight_closing
         ]
         night_empty_msg = "\n".join(card_parts)
         if is_preview:
             night_empty_msg = f"<i>[{rt.upper()} 预览]</i>\n\n" + night_empty_msg
             
-        await context.bot.send_message(
-            chat_id=ADMIN_USER_ID,
-            text=night_empty_msg,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True
-        )
+        if telegraph_url:
+            preview_opts = LinkPreviewOptions(
+                url=telegraph_url,
+                is_disabled=False,
+                prefer_large_media=True,
+                show_above_text=False
+            )
+            await context.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text=night_empty_msg,
+                parse_mode=ParseMode.HTML,
+                link_preview_options=preview_opts,
+                reply_markup=MAIN_REPLY_KEYBOARD
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text=night_empty_msg,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                reply_markup=MAIN_REPLY_KEYBOARD
+            )
         return
 
     # 按源分组
@@ -1799,54 +1844,67 @@ async def send_digest_dispatch(context: ContextTypes.DEFAULT_TYPE, report_type: 
 
     sorted_feed_items = sorted(grouped.items(), key=lambda item: item[0])
 
-    # 6. 组装 Telegra.ph 原生排版节点（方向 3：CDT 杂志复刻级排版，纯粹资讯，典雅竖块）
-    telegraph_nodes = [
-        {"tag": "h4", "children": [f"NewsFlash {period_name} · 资讯精编 ({title_date})"]},
-        {"tag": "p", "children": ["全网聚合 · 纯粹阅读 · 静默陪伴"]},
-        {"tag": "hr"}
-    ]
-    
-    if master_articles:
-        telegraph_nodes.append({"tag": "h3", "children": ["▍ 主人专栏 · 今日动态"]})
-        m_list = []
-        for it in master_articles:
-            try:
-                pub_dt = datetime.strptime(it["published_at"], "%Y-%m-%d %H:%M:%S")
-                time_str = pub_dt.strftime("%H:%M")
-            except Exception:
-                time_str = "--:--"
-            m_list.append({"tag": "li", "children": [
-                {"tag": "a", "attrs": {"href": it["link"]}, "children": [it["art_title"]]},
-                f" ({time_str})"
-            ]})
-        telegraph_nodes.append({"tag": "ul", "children": m_list})
-        telegraph_nodes.append({"tag": "hr"})
-
-    for f_id, data in sorted_feed_items:
-        feed_title_escaped = data["title"]
-        telegraph_nodes.append({"tag": "h3", "children": [f"▍ [{f_id}] {feed_title_escaped} (共 {len(data['items'])} 篇)"]})
-        items_nodes = []
-        for it in data["items"]:
-            try:
-                pub_dt = datetime.strptime(it["published_at"], "%Y-%m-%d %H:%M:%S")
-                time_str = pub_dt.strftime("%H:%M")
-            except Exception:
-                time_str = "--:--"
-            items_nodes.append({
-                "tag": "li",
-                "children": [
+    # 组装 Telegra.ph 原生排版节点（含 GitHub 热力图封面，单源上限 6 篇防止超大包 CONTENT_TOO_BIG）
+    def build_telegraph_nodes(max_items_per_feed: int = 6) -> list[dict]:
+        nodes = [
+            {"tag": "figure", "children": [
+                {"tag": "img", "attrs": {"src": gh_url}},
+                {"tag": "figcaption", "children": [f"GitHub Activity Matrix · 主题配色：{theme_name} (#{hex_color})"]}
+            ]},
+            {"tag": "h4", "children": [f"NewsFlash {period_name} · 资讯精编 ({title_date})"]},
+            {"tag": "p", "children": ["全网聚合 · 纯粹阅读 · 静默陪伴"]},
+            {"tag": "hr"}
+        ]
+        
+        if master_articles:
+            nodes.append({"tag": "h3", "children": ["▍ 主人专栏 · 今日动态"]})
+            m_list = []
+            for it in master_articles:
+                try:
+                    pub_dt = datetime.strptime(it["published_at"], "%Y-%m-%d %H:%M:%S")
+                    time_str = pub_dt.strftime("%H:%M")
+                except Exception:
+                    time_str = "--:--"
+                m_list.append({"tag": "li", "children": [
                     {"tag": "a", "attrs": {"href": it["link"]}, "children": [it["art_title"]]},
                     f" ({time_str})"
-                ]
-            })
-        telegraph_nodes.append({"tag": "ul", "children": items_nodes})
-        telegraph_nodes.append({"tag": "hr"})
+                ]})
+            nodes.append({"tag": "ul", "children": m_list})
+            nodes.append({"tag": "hr"})
 
-    telegraph_nodes.append({"tag": "p", "children": ["NewsFlash · 专属主人的高质感资讯特刊"]})
+        for f_id, data in sorted_feed_items:
+            feed_title_escaped = data["title"]
+            items = data["items"]
+            displayed_items = items[:max_items_per_feed]
+            sec_title = f"▍ [{f_id}] {feed_title_escaped} (共 {len(items)} 篇{f'，精选 {len(displayed_items)} 篇' if len(items) > max_items_per_feed else ''})"
+            nodes.append({"tag": "h3", "children": [sec_title]})
+            items_nodes = []
+            for it in displayed_items:
+                try:
+                    pub_dt = datetime.strptime(it["published_at"], "%Y-%m-%d %H:%M:%S")
+                    time_str = pub_dt.strftime("%H:%M")
+                except Exception:
+                    time_str = "--:--"
+                items_nodes.append({
+                    "tag": "li",
+                    "children": [
+                        {"tag": "a", "attrs": {"href": it["link"]}, "children": [it["art_title"]]},
+                        f" ({time_str})"
+                    ]
+                })
+            nodes.append({"tag": "ul", "children": items_nodes})
+            nodes.append({"tag": "hr"})
 
-    # 发布到 Telegra.ph
-    page_title = f"NewsFlash {period_name} · {title_date}"
+        nodes.append({"tag": "p", "children": ["NewsFlash · 专属主人的高质感资讯特刊"]})
+        return nodes
+
+    # 发布到 Telegra.ph（具备自动降级重试机制）
+    telegraph_nodes = build_telegraph_nodes(max_items_per_feed=6)
     telegraph_url = await publish_telegraph_page(page_title, telegraph_nodes)
+    if not telegraph_url:
+        print("[Telegraph] 首发失败，降级压缩重试...")
+        telegraph_nodes = build_telegraph_nodes(max_items_per_feed=2)
+        telegraph_url = await publish_telegraph_page(page_title, telegraph_nodes)
 
     # 7. 组装极致纯净的 Telegram 极简卡片 (C1 + 移除正文 URL)
     card_lines = [
@@ -1876,14 +1934,16 @@ async def send_digest_dispatch(context: ContextTypes.DEFAULT_TYPE, report_type: 
             chat_id=ADMIN_USER_ID,
             text=final_card,
             parse_mode=ParseMode.HTML,
-            link_preview_options=preview_opts
+            link_preview_options=preview_opts,
+            reply_markup=MAIN_REPLY_KEYBOARD
         )
     else:
         await context.bot.send_message(
             chat_id=ADMIN_USER_ID,
             text=final_card,
             parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True
+            disable_web_page_preview=True,
+            reply_markup=MAIN_REPLY_KEYBOARD
         )
 
 # 定时调度入口
@@ -1893,22 +1953,22 @@ async def job_evening_digest(context: ContextTypes.DEFAULT_TYPE):
 # 手动预览指令
 async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await auth_check(update): return
-    await update.effective_message.reply_text("正在为主人生成今日晚报预览喵...")
+    await update.effective_message.reply_text("正在为主人生成今日晚报预览喵...", reply_markup=MAIN_REPLY_KEYBOARD)
     await send_digest_dispatch(context, report_type="daily", is_preview=True)
 
 async def cmd_weekly(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await auth_check(update): return
-    await update.effective_message.reply_text("正在为主人生成周度特刊预览喵...")
+    await update.effective_message.reply_text("正在为主人生成周度特刊预览喵...", reply_markup=MAIN_REPLY_KEYBOARD)
     await send_digest_dispatch(context, report_type="weekly", is_preview=True)
 
 async def cmd_monthly(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await auth_check(update): return
-    await update.effective_message.reply_text("正在为主人生成月度特刊预览喵...")
+    await update.effective_message.reply_text("正在为主人生成月度特刊预览喵...", reply_markup=MAIN_REPLY_KEYBOARD)
     await send_digest_dispatch(context, report_type="monthly", is_preview=True)
 
 async def cmd_annual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await auth_check(update): return
-    await update.effective_message.reply_text("正在为主人生成年度史册特刊预览喵...")
+    await update.effective_message.reply_text("正在为主人生成年度史册特刊预览喵...", reply_markup=MAIN_REPLY_KEYBOARD)
     await send_digest_dispatch(context, report_type="annual", is_preview=True)
 
 # ----------------- 异步生命周期挂钩（注册原生菜单） -----------------
@@ -1964,7 +2024,6 @@ async def cmd_checkin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = get_today_habit_status()
     text = format_habit_card(status)
     markup = build_habit_markup(status)
-    main_kb = ReplyKeyboardMarkup([[KeyboardButton("打卡")]], resize_keyboard=True, is_persistent=True)
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 async def cmd_addhabit(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2136,6 +2195,16 @@ async def post_init(application: Application):
         print("Telegram 原生左下角 Menu 菜单已强制刷新并生效！")
     except Exception as e:
         print(f"注册原生菜单失败: {e}")
+        
+    try:
+        await application.bot.send_message(
+            chat_id=ADMIN_USER_ID,
+            text="NewsFlash 守护系统已就绪，底部已常驻「打卡」快捷键。",
+            reply_markup=MAIN_REPLY_KEYBOARD
+        )
+        print("Telegram 底部常驻打卡按键激活消息已送达！")
+    except Exception as e:
+        print(f"发送常驻打卡按键失败: {e}")
 
 # ----------------- 主程序启动 -----------------
 def main():
