@@ -47,7 +47,11 @@ from telegram import (
     BotCommandScopeDefault,
     BotCommandScopeChat,
     MenuButtonCommands,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
 )
+from PIL import Image, ImageDraw
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -131,6 +135,164 @@ def get_db():
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
 
+
+# ==================== 8套高质感随机热力图主题色盘 ====================
+PALETTES = {
+    "万圣南瓜紫": {
+        "bg": (27, 21, 35),
+        "levels": [
+            (43, 33, 58),     # Level 0 (0% 未完成)
+            (99, 28, 3),      # Level 1 (1%-25%)
+            (189, 86, 29),    # Level 2 (26%-50%)
+            (250, 122, 24),   # Level 3 (51%-99%)
+            (253, 223, 104)   # Level 4 (100% 大满贯)
+        ],
+        "hex": "fa7a18"
+    },
+    "GitHub经典绿": {
+        "bg": (22, 27, 34),
+        "levels": [
+            (33, 38, 45),
+            (14, 68, 41),
+            (0, 109, 50),
+            (38, 166, 65),
+            (57, 211, 83)
+        ],
+        "hex": "26a641"
+    },
+    "赛博霓虹": {
+        "bg": (13, 2, 33),
+        "levels": [
+            (31, 16, 53),
+            (79, 18, 113),
+            (159, 24, 122),
+            (230, 34, 114),
+            (0, 240, 255)
+        ],
+        "hex": "00f0ff"
+    },
+    "冬夜幽蓝": {
+        "bg": (11, 25, 44),
+        "levels": [
+            (30, 62, 98),
+            (0, 80, 130),
+            (0, 123, 182),
+            (0, 168, 204),
+            (166, 227, 233)
+        ],
+        "hex": "00a8cc"
+    },
+    "落樱暗绯": {
+        "bg": (31, 20, 24),
+        "levels": [
+            (53, 32, 40),
+            (110, 33, 66),
+            (184, 59, 94),
+            (240, 138, 157),
+            (255, 211, 226)
+        ],
+        "hex": "f08a9d"
+    },
+    "落日琥珀": {
+        "bg": (28, 25, 23),
+        "levels": [
+            (41, 37, 36),
+            (120, 53, 15),
+            (180, 83, 9),
+            (245, 158, 11),
+            (253, 230, 138)
+        ],
+        "hex": "f59e0b"
+    },
+    "极简墨银": {
+        "bg": (18, 18, 18),
+        "levels": [
+            (36, 36, 36),
+            (72, 72, 72),
+            (122, 122, 122),
+            (176, 176, 176),
+            (255, 255, 255)
+        ],
+        "hex": "b0b0b0"
+    },
+    "幽谷竹青": {
+        "bg": (15, 29, 25),
+        "levels": [
+            (29, 51, 45),
+            (27, 67, 50),
+            (45, 106, 79),
+            (82, 183, 136),
+            (183, 228, 199)
+        ],
+        "hex": "52b788"
+    }
+}
+
+def ratio_to_level(ratio: float) -> int:
+    if ratio <= 0.0:
+        return 0
+    elif ratio <= 0.25:
+        return 1
+    elif ratio <= 0.50:
+        return 2
+    elif ratio < 1.0:
+        return 3
+    else:
+        return 4
+
+def render_heatmap_image(history_data: dict[str, float], streak_days: int = 0, palette_name: str = None, save_path: str = None) -> str:
+    if not save_path:
+        save_path = os.path.join(BASE_DIR, "habit_heatmap.png")
+    if not palette_name or palette_name not in PALETTES:
+        palette_name = random.choice(list(PALETTES.keys()))
+    palette = PALETTES[palette_name]
+    
+    weeks = 13
+    days_per_week = 7
+    total_days = weeks * days_per_week
+    
+    today = datetime.now(TIMEZONE).date()
+    start_date = today - timedelta(days=(total_days - 1))
+    start_monday = start_date - timedelta(days=start_date.weekday())
+    
+    box_size = 14
+    box_gap = 4
+    left_padding = 30
+    right_padding = 30
+    top_padding = 60
+    bottom_padding = 35
+    
+    width = left_padding + weeks * (box_size + box_gap) + right_padding
+    height = top_padding + days_per_week * (box_size + box_gap) + bottom_padding
+    
+    img = Image.new("RGB", (width, height), palette["bg"])
+    draw = ImageDraw.Draw(img)
+    
+    header_title = "HABIT TRACKER"
+    sub_title = f"THEME: {palette_name.upper()} | STREAK: {streak_days} DAYS"
+    draw.text((left_padding, 18), header_title, fill=(240, 240, 240))
+    draw.text((left_padding, 36), sub_title, fill=(160, 160, 160))
+    
+    curr = start_monday
+    for col in range(weeks + 1):
+        for row in range(days_per_week):
+            d_str = curr.strftime("%Y-%m-%d")
+            x = left_padding + col * (box_size + box_gap)
+            y = top_padding + row * (box_size + box_gap)
+            
+            if curr > today:
+                curr += timedelta(days=1)
+                continue
+                
+            ratio = history_data.get(d_str, 0.0)
+            lvl = ratio_to_level(ratio)
+            color = palette["levels"][lvl]
+            draw.rounded_rectangle([x, y, x + box_size, y + box_size], radius=2, fill=color)
+            curr += timedelta(days=1)
+            
+    img.save(save_path)
+    return save_path
+
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with get_db() as conn:
@@ -184,7 +346,180 @@ def init_db():
                 value TEXT
             );
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS habits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_active INTEGER DEFAULT 1
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS habit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                habit_id INTEGER NOT NULL,
+                check_date TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(habit_id, check_date),
+                FOREIGN KEY(habit_id) REFERENCES habits(id) ON DELETE CASCADE
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS daily_habit_snapshots (
+                check_date TEXT PRIMARY KEY,
+                completed_count INTEGER NOT NULL,
+                total_count INTEGER NOT NULL,
+                ratio REAL NOT NULL,
+                streak_count INTEGER DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
         conn.commit()
+
+
+# ----------------- 习惯系统业务与打卡看板引擎 -----------------
+def get_active_habits(conn: sqlite3.Connection = None) -> list[dict]:
+    close_after = False
+    if conn is None:
+        conn = get_db()
+        close_after = True
+    try:
+        rows = conn.execute("SELECT id, name, created_at FROM habits WHERE is_active = 1 ORDER BY id ASC").fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_after:
+            conn.close()
+
+def calculate_habit_streak(conn: sqlite3.Connection = None) -> int:
+    close_after = False
+    if conn is None:
+        conn = get_db()
+        close_after = True
+    try:
+        now_date = datetime.now(TIMEZONE).date()
+        today_str = now_date.strftime("%Y-%m-%d")
+        today_has = conn.execute("SELECT 1 FROM habit_logs WHERE check_date = ? LIMIT 1", (today_str,)).fetchone()
+        
+        check_start = now_date if today_has else (now_date - timedelta(days=1))
+        streak = 0
+        curr = check_start
+        while True:
+            d_str = curr.strftime("%Y-%m-%d")
+            row = conn.execute("SELECT 1 FROM habit_logs WHERE check_date = ? LIMIT 1", (d_str,)).fetchone()
+            if row:
+                streak += 1
+                curr -= timedelta(days=1)
+            else:
+                break
+        return streak
+    finally:
+        if close_after:
+            conn.close()
+
+def get_today_habit_status(today_str: str = None) -> dict:
+    if not today_str:
+        today_str = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
+    with get_db() as conn:
+        active_habits = get_active_habits(conn)
+        logged_rows = conn.execute("SELECT habit_id FROM habit_logs WHERE check_date = ?", (today_str,)).fetchall()
+        checked_ids = {r["habit_id"] for r in logged_rows}
+        
+        streak = calculate_habit_streak(conn)
+        total = len(active_habits)
+        completed = sum(1 for h in active_habits if h["id"] in checked_ids)
+        ratio = (completed / total) if total > 0 else 0.0
+        
+        conn.execute("""
+            INSERT INTO daily_habit_snapshots (check_date, completed_count, total_count, ratio, streak_count, updated_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(check_date) DO UPDATE SET
+                completed_count = excluded.completed_count,
+                total_count = excluded.total_count,
+                ratio = excluded.ratio,
+                streak_count = excluded.streak_count,
+                updated_at = CURRENT_TIMESTAMP
+        """, (today_str, completed, total, ratio, streak))
+        conn.commit()
+        
+        return {
+            "date": today_str,
+            "habits": active_habits,
+            "checked_ids": checked_ids,
+            "completed": completed,
+            "total": total,
+            "ratio": ratio,
+            "streak": streak
+        }
+
+def toggle_habit_log(habit_id: int, today_str: str = None) -> tuple[bool, dict]:
+    if not today_str:
+        today_str = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
+    with get_db() as conn:
+        row = conn.execute("SELECT id FROM habit_logs WHERE habit_id = ? AND check_date = ?", (habit_id, today_str)).fetchone()
+        if row:
+            conn.execute("DELETE FROM habit_logs WHERE id = ?", (row["id"],))
+            conn.commit()
+            is_checked = False
+        else:
+            conn.execute("INSERT OR IGNORE INTO habit_logs (habit_id, check_date) VALUES (?, ?)", (habit_id, today_str))
+            conn.commit()
+            is_checked = True
+            
+    status = get_today_habit_status(today_str)
+    return is_checked, status
+
+def build_habit_markup(status: dict) -> InlineKeyboardMarkup:
+    habits = status["habits"]
+    checked_ids = status["checked_ids"]
+    
+    keyboard = []
+    row = []
+    for h in habits:
+        h_id = h["id"]
+        h_name = h["name"]
+        if h_id in checked_ids:
+            btn_text = f"[达成] {h_name}"
+        else:
+            btn_text = f"{h_name}"
+        row.append(InlineKeyboardButton(btn_text, callback_data=f"habit:toggle:{h_id}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+        
+    keyboard.append([
+        InlineKeyboardButton("+ 添加新习惯", callback_data="habit:add_guide"),
+        InlineKeyboardButton("习惯热力图", callback_data="habit:heatmap")
+    ])
+    return InlineKeyboardMarkup(keyboard)
+
+def format_habit_card(status: dict) -> str:
+    total = status["total"]
+    completed = status["completed"]
+    streak = status["streak"]
+    date_str = status["date"]
+    
+    if total == 0:
+        pct = 0
+    else:
+        pct = int((completed / total) * 100)
+        
+    lines = [
+        f"<b>今日习惯打卡清单 · {date_str}</b>",
+        f"今日进度：<b>{completed} / {total}</b> 项 · 达成率 <b>{pct}%</b>",
+        f"自律长跑：连续打卡 <b>{streak}</b> 天"
+    ]
+    
+    if total > 0 and completed == total:
+        lines.append("")
+        lines.append("<i>今日大满贯达成！所有自律项全清，热力图峰值高光已点亮！</i>")
+    elif total == 0:
+        lines.append("")
+        lines.append("<i>当前暂未添加任何习惯，点击下方「+ 添加新习惯」或发送 <code>/addhabit &lt;名称&gt;</code> 开始记录。</i>")
+        
+    return "\n".join(lines)
+
 
 # ----------------- 关键词过滤逻辑 -----------------
 def is_title_blocked(feed_id: int, title: str, conn: sqlite3.Connection) -> bool:
@@ -415,6 +750,10 @@ HELP_TEXT = (
 def build_menu_keyboard():
     """纯文字高质感按钮，无任何特殊符号或 Emoji"""
     return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("习惯打卡", callback_data="menu_checkin"),
+            InlineKeyboardButton("习惯热力图", callback_data="menu_heatmap"),
+        ],
         [
             InlineKeyboardButton("订阅列表", callback_data="menu_list"),
             InlineKeyboardButton("预览日报", callback_data="menu_digest"),
@@ -1554,6 +1893,197 @@ async def cmd_annual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_digest_dispatch(context, report_type="annual", is_preview=True)
 
 # ----------------- 异步生命周期挂钩（注册原生菜单） -----------------
+
+# ----------------- 习惯与热力图指令处理器 -----------------
+
+MILESTONE_DAYS = [3, 7, 10, 21, 30, 60, 100, 200, 365, 1000]
+
+def get_habit_feedback_dialogue(persona: dict, streak_days: int, is_broken_reset: bool = False, is_all_completed: bool = False) -> str:
+    """
+    根据打卡状态与人设返回伴侣专属语音台词：
+    1. 命中 10 阶里程碑 -> P5R 羁绊加深台词 (achievement_XXd)
+    2. 断签重起 -> 温柔安抚与启程 (streak_break_comfort)
+    3. 全清/日常打卡 -> 日常连胜鼓励 (daily_checkin_praise)
+    """
+    if streak_days in MILESTONE_DAYS:
+        key = f"achievement_{streak_days}d"
+        if key in persona and persona[key]:
+            return (
+                f"▍你感到与当前伴侣的羁绊加深了……\n"
+                f"▍协助者契约提升：RANK（连续自律坚持 {streak_days} 天）\n\n"
+                f"「{persona[key]}」"
+            )
+        else:
+            return (
+                f"▍你感到与当前伴侣的羁绊加深了……\n"
+                f"▍协助者契约提升：RANK（连续自律坚持 {streak_days} 天）\n\n"
+                f"「整整坚持了 {streak_days} 天呢，主人真是一点都没让我失望。往后的日子，也请继续让我看着你往前走吧。」"
+            )
+            
+    if is_broken_reset:
+        comfort = persona.get("streak_break_comfort")
+        if comfort:
+            return f"「{comfort}」"
+        else:
+            return "「偶尔停下脚步歇一歇也无妨，主人。深呼吸，今天我们重新迈出第一步，我一直在这里陪着你。」"
+            
+    if is_all_completed:
+        praise = persona.get("daily_checkin_praise")
+        if praise:
+            try:
+                line = praise.format(streak_days=streak_days)
+            except Exception:
+                line = praise
+            return f"「{line}」"
+        else:
+            return f"「今天所有的自律项都全清了呢。连续打卡第 {streak_days} 天，主人今天也格外耀眼，今晚好好休息吧。」"
+            
+    return ""
+
+async def cmd_checkin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await auth_check(update): return
+    status = get_today_habit_status()
+    text = format_habit_card(status)
+    markup = build_habit_markup(status)
+    main_kb = ReplyKeyboardMarkup([[KeyboardButton("打卡")]], resize_keyboard=True, is_persistent=True)
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+async def cmd_addhabit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await auth_check(update): return
+    if not context.args:
+        await update.effective_message.reply_text(
+            "格式错误，请使用：<code>/addhabit &lt;习惯名称&gt;</code>\n"
+            "<i>示例：<code>/addhabit 计算机备考刷题</code></i>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    name = " ".join(context.args).strip()
+    with get_db() as conn:
+        try:
+            conn.execute("INSERT INTO habits (name, is_active) VALUES (?, 1) ON CONFLICT(name) DO UPDATE SET is_active = 1", (name,))
+            conn.commit()
+            new_id = conn.execute("SELECT id FROM habits WHERE name = ?", (name,)).fetchone()["id"]
+        except Exception as e:
+            await update.effective_message.reply_text(f"添加失败：{html.escape(str(e))}")
+            return
+            
+    status = get_today_habit_status()
+    text = format_habit_card(status)
+    markup = build_habit_markup(status)
+    await update.effective_message.reply_text(
+        f"已成功为主人添加新习惯：<b>[{new_id}] {html.escape(name)}</b>！\n已自动装载至打卡面板：",
+        parse_mode=ParseMode.HTML,
+        reply_markup=markup
+    )
+
+async def cmd_delhabit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await auth_check(update): return
+    if not context.args:
+        await update.effective_message.reply_text("请提供要移除的习惯编号：<code>/delhabit &lt;编号&gt;</code>", parse_mode=ParseMode.HTML)
+        return
+    try:
+        h_id = int(context.args[0].strip())
+    except ValueError:
+        await update.effective_message.reply_text("习惯编号必须为数字。")
+        return
+    with get_db() as conn:
+        res = conn.execute("UPDATE habits SET is_active = 0 WHERE id = ?", (h_id,))
+        conn.commit()
+        if res.rowcount > 0:
+            await update.effective_message.reply_text(f"已成功将编号为 <code>{h_id}</code> 的习惯移出打卡面板。", parse_mode=ParseMode.HTML)
+        else:
+            await update.effective_message.reply_text("未找到该编号的习惯，请发送 <code>/habits</code> 核对编号。", parse_mode=ParseMode.HTML)
+
+async def cmd_habits(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await auth_check(update): return
+    habits = get_active_habits()
+    if not habits:
+        await update.effective_message.reply_text(
+            "当前暂未设定任何习惯，发送 <code>/addhabit &lt;名称&gt;</code> 即可添加。",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    lines = ["<b>当前自律习惯清单：</b>\n"]
+    for h in habits:
+        lines.append(f"• <b>[{h['id']}]</b> {html.escape(h['name'])}")
+    lines.append("\n<i>发送 <code>打卡</code> 或 <code>/checkin</code> 即可调出打卡面板。</i>")
+    await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+async def cmd_heatmap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await auth_check(update): return
+    with get_db() as conn:
+        rows = conn.execute("SELECT check_date, ratio FROM daily_habit_snapshots").fetchall()
+        history_data = {r["check_date"]: r["ratio"] for r in rows}
+        streak = calculate_habit_streak(conn)
+        
+    theme_name = random.choice(list(PALETTES.keys()))
+    img_path = os.path.join(BASE_DIR, "habit_heatmap.png")
+    render_heatmap_image(history_data, streak_days=streak, palette_name=theme_name, save_path=img_path)
+    
+    caption = (
+        f"<b>习惯追踪热力图</b>\n"
+        f"• 今日主题色：<code>{theme_name}</code>（完全随机）\n"
+        f"• 当前自律连胜：<b>{streak}</b> 天\n"
+        f"<i>历史达成率绝对固化，深浅反映当日自律饱满度。</i>"
+    )
+    with open(img_path, "rb") as f:
+        await update.effective_message.reply_photo(
+            photo=f,
+            caption=caption,
+            parse_mode=ParseMode.HTML
+        )
+
+async def cmd_gh(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await auth_check(update): return
+    theme_name = random.choice(list(PALETTES.keys()))
+    hex_color = PALETTES[theme_name]["hex"]
+    gh_url = f"https://ghchart.rshah.org/{hex_color}/F10w-0x00"
+    
+    caption = (
+        f"<b>GitHub 极客热力图（F10w-0x00）</b>\n"
+        f"• 今日主题色：<code>{theme_name}</code>（#{hex_color}）\n"
+        f"<i>极客生产力与开源坚持见证。</i>"
+    )
+    await update.effective_message.reply_text(
+        f"{caption}\n\n<a href=\"{gh_url}\">查看高清矢量图表</a>",
+        parse_mode=ParseMode.HTML
+    )
+
+async def cb_habit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    
+    if data.startswith("habit:toggle:"):
+        h_id = int(data.split(":")[2])
+        is_checked, status = toggle_habit_log(h_id)
+        markup = build_habit_markup(status)
+        text = format_habit_card(status)
+        
+        # 伴侣情感联动
+        persona = get_today_persona()
+        all_done = (status["total"] > 0 and status["completed"] == status["total"])
+        streak = status["streak"]
+        dialogue = get_habit_feedback_dialogue(persona, streak, is_all_completed=all_done)
+        if dialogue:
+            text += "\n\n" + dialogue
+            
+        try:
+            await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+        except Exception:
+            pass
+    elif data == "habit:add_guide":
+        await query.message.reply_text(
+            "<b>添加新习惯</b>\n\n"
+            "发送指令：<code>/addhabit &lt;习惯名称&gt;</code>\n"
+            "<i>示例：<code>/addhabit 晨起作息</code></i>\n"
+            "<i>示例：<code>/addhabit 计算机备考刷题</code></i>\n\n"
+            "<i>添加后将自动出现在打卡面板中。</i>",
+            parse_mode=ParseMode.HTML
+        )
+    elif data == "habit:heatmap":
+        await cmd_heatmap(update, context)
+
 async def post_init(application: Application):
     commands = [
         BotCommand("menu", "控制中心面板"),
@@ -1561,6 +2091,11 @@ async def post_init(application: Application):
         BotCommand("weekly", "周度特刊预览"),
         BotCommand("monthly", "月度特刊预览"),
         BotCommand("annual", "年度史册特刊预览"),
+        BotCommand("checkin", "习惯打卡看板"),
+        BotCommand("heatmap", "习惯追踪热力图"),
+        BotCommand("habits", "自律习惯清单"),
+        BotCommand("addhabit", "添加新习惯: /addhabit 名称"),
+        BotCommand("gh", "GitHub 极客热力图"),
         BotCommand("targets", "日程与历程双分区看板"),
         BotCommand("target", "添加目标: /target 日期 事项 | 备注"),
         BotCommand("list", "已订阅博客列表"),
@@ -1598,6 +2133,17 @@ def main():
     app.add_handler(CommandHandler("monthly", cmd_monthly))
     app.add_handler(CommandHandler("annual", cmd_annual))
     
+    # 习惯与热力图指令
+    app.add_handler(MessageHandler(filters.Regex("^打卡$"), cmd_checkin))
+    app.add_handler(CommandHandler("checkin", cmd_checkin))
+    app.add_handler(CommandHandler("habit", cmd_checkin))
+    app.add_handler(CommandHandler("addhabit", cmd_addhabit))
+    app.add_handler(CommandHandler("delhabit", cmd_delhabit))
+    app.add_handler(CommandHandler("habits", cmd_habits))
+    app.add_handler(CommandHandler("heatmap", cmd_heatmap))
+    app.add_handler(CommandHandler("gh", cmd_gh))
+    app.add_handler(CallbackQueryHandler(cb_habit, pattern="^habit:"))
+
     # 倒数日与历程指令
     app.add_handler(CommandHandler("target", cmd_target))
     app.add_handler(CommandHandler("targets", cmd_targets))
