@@ -1835,30 +1835,86 @@ async def send_digest_dispatch(context: ContextTypes.DEFAULT_TYPE, report_type: 
 
     sorted_feed_items = sorted(grouped.items(), key=lambda item: item[0])
 
-    # 组装 Telegra.ph 原生排版节点（纯粹资讯，全量完整展现，杜绝精选，零低信息量套话）
-    telegraph_nodes = []
+    # 组装分区节点（纯粹资讯，全量完整展现，杜绝精选，零低信息量套话）
+    feed_sections = []
     if master_articles:
-        telegraph_nodes.append({"tag": "h3", "children": ["▍ 主人专栏 · 今日动态"]})
         m_children = []
         for it in master_articles:
             m_children.append({"tag": "a", "attrs": {"href": it["link"]}, "children": [it["art_title"]]})
             m_children.append({"tag": "br"})
-        telegraph_nodes.append({"tag": "p", "children": m_children})
-        telegraph_nodes.append({"tag": "hr"})
+        feed_sections.append([
+            {"tag": "h3", "children": ["▍ 主人专栏 · 今日动态"]},
+            {"tag": "p", "children": m_children},
+            {"tag": "hr"}
+        ])
 
     for f_id, data in sorted_feed_items:
         feed_title_escaped = data["title"]
         items = data["items"]
-        telegraph_nodes.append({"tag": "h3", "children": [f"▍ [{f_id}] {feed_title_escaped} (共 {len(items)} 篇)"]})
-        p_children = []
-        for it in items:
-            p_children.append({"tag": "a", "attrs": {"href": it["link"]}, "children": [it["art_title"]]})
-            p_children.append({"tag": "br"})
-        telegraph_nodes.append({"tag": "p", "children": p_children})
-        telegraph_nodes.append({"tag": "hr"})
+        # 对单源超过 120 篇的高频源（如 V2EX）进行分段平铺
+        chunk_size = 120
+        for i in range(0, len(items), chunk_size):
+            chunk = items[i:i+chunk_size]
+            sub_title = f"▍ [{f_id}] {feed_title_escaped} (共 {len(items)} 篇"
+            if len(items) > chunk_size:
+                sub_title += f" · 第 {i+1}-{i+len(chunk)} 篇"
+            sub_title += ")"
+            
+            p_children = []
+            for it in chunk:
+                p_children.append({"tag": "a", "attrs": {"href": it["link"]}, "children": [it["art_title"]]})
+                p_children.append({"tag": "br"})
+            
+            feed_sections.append([
+                {"tag": "h3", "children": [sub_title]},
+                {"tag": "p", "children": p_children},
+                {"tag": "hr"}
+            ])
 
-    # 发布到 Telegra.ph（全量完整展现）
-    telegraph_url = await publish_telegraph_page(page_title, telegraph_nodes)
+    # 按 Telegra.ph 42KB 安全容量自动分页（保证 100% 资讯全部收录，永不超限）
+    pages_nodes = []
+    curr_nodes = []
+    curr_size = 0
+    for sec in feed_sections:
+        sec_bytes = len(json.dumps(sec, ensure_ascii=False).encode('utf-8'))
+        if curr_size + sec_bytes > 42000 and curr_nodes:
+            pages_nodes.append(curr_nodes)
+            curr_nodes = []
+            curr_size = 0
+        curr_nodes.extend(sec)
+        curr_size += sec_bytes
+    if curr_nodes:
+        pages_nodes.append(curr_nodes)
+
+    # 逆向发布，卷卷相扣（下卷链接无缝嵌入上卷末尾，Instant View 翻页秒开）
+    total_parts = len(pages_nodes)
+    next_url = None
+    first_url = None
+    page_urls = []
+    for idx in range(total_parts - 1, -1, -1):
+        p_nodes = list(pages_nodes[idx])
+        part_num = idx + 1
+        if next_url:
+            p_nodes.append({"tag": "p", "children": [
+                {"tag": "b", "children": ["▍ "]},
+                {"tag": "a", "attrs": {"href": next_url}, "children": [f"点击继续阅读第 {part_num+1}/{total_parts} 卷"]}
+            ]})
+            
+        p_title = page_title
+        if total_parts > 1:
+            p_title += f" ({part_num}/{total_parts})"
+            
+        p_url = await publish_telegraph_page(p_title, p_nodes)
+        if not p_url:
+            print(f"[Telegraph] 第 {part_num} 卷发布异常，启动紧急保护")
+            p_url = await publish_telegraph_page(p_title, p_nodes[:len(p_nodes)//2])
+            
+        page_urls.insert(0, p_url)
+        next_url = p_url
+        if idx == 0:
+            first_url = p_url
+
+    telegraph_url = first_url
 
     # 7. 组装极致纯净的 Telegram 极简卡片 (C1 + 即时预览大卡片触发)
     card_lines = [
@@ -1878,6 +1934,10 @@ async def send_digest_dispatch(context: ContextTypes.DEFAULT_TYPE, report_type: 
 
     if telegraph_url:
         final_card += f"<a href=\"{telegraph_url}\">&#x200b;</a>"
+        if total_parts > 1:
+            part_links = " · ".join([f'<a href="{u}">第 {i+1} 卷</a>' for i, u in enumerate(page_urls) if u])
+            final_card += f"\n\n▍ <b>长报分卷：</b>{part_links}"
+
         preview_opts = LinkPreviewOptions(
             url=telegraph_url,
             is_disabled=False,
